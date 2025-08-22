@@ -1,0 +1,3154 @@
+{
+  "name": "Rent Payment Reconciliation",
+  "nodes": [
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "e684f73b-e46a-4ab2-949a-468e6e994d2d",
+      "name": "Split In Batches - 1 Locataire",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        1160,
+        2605
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\n\n// Séparer locataires et virements\nconst locataires = items.filter(item => item.json.nom && item.json.loyer);\nconst virements = items.filter(item => item.json.Libelle && item.json.Credit);\n\n// Fonction de distance de Levenshtein\nfunction levenshteinDistance(str1, str2) {\n  const m = str1.length;\n  const n = str2.length;\n  const dp = Array(m + 1).fill().map(() => Array(n + 1).fill(0));\n  for (let i = 0; i <= m; i++) dp[i][0] = i;\n  for (let j = 0; j <= n; j++) dp[0][j] = j;\n  for (let i = 1; i <= m; i++) {\n    for (let j = 1; j <= n; j++) {\n      dp[i][j] = str1[i - 1] === str2[j - 1]\n        ? dp[i - 1][j - 1]\n        : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);\n    }\n  }\n  return dp[m][n];\n}\n\n// Normalisation d'une chaîne\nfunction normalizeString(str) {\n  return (str || '').toString().toUpperCase()\n    .normalize('NFD')\n    .replace(/[\\u0300-\\u036f]/g, '')\n    .replace(/[^A-Z0-9]/g, '');\n}\n\n// Extraction de noms depuis un libellé\nfunction extractNamesFromLibelle(libelle) {\n  if (!libelle) return [];\n  const cleaned = libelle.toUpperCase();\n  const patterns = [\n    /VIR\\s+(?:M|MME|MLLE)?\\s*([A-Z\\-\\s]+?)(?:\\s+\\d|$)/i,\n    /VIR\\s+INST\\s+(?:M|MME|MLLE)?\\s*([A-Z\\-\\s]+?)(?:\\s+\\d|$)/i,\n    /(?:DE|PAR)\\s+(?:M|MME|MLLE)?\\s*([A-Z\\-\\s]+?)(?:\\s+\\d|$)/i,\n  ];\n  const names = [];\n  for (const pattern of patterns) {\n    const match = cleaned.match(pattern);\n    if (match && match[1]) {\n      const extracted = match[1].trim();\n      names.push(extracted);\n      names.push(...extracted.split(/\\s+/).filter(w => w.length > 2));\n    }\n  }\n  const virSplit = cleaned.split(/VIR\\s+(?:M|MME|MLLE|INST)?\\s*/);\n  if (virSplit.length > 1) {\n    const afterVir = virSplit[1];\n    const words = afterVir.split(/\\s+/).filter(w => w.length > 2 && !/^\\d+$/.test(w)).slice(0, 3);\n    names.push(...words);\n  }\n  return [...new Set(names)];\n}\n\n// Similarité entre deux chaînes\nfunction calculateStringSimilarity(str1, str2) {\n  const s1 = normalizeString(str1);\n  const s2 = normalizeString(str2);\n  if (!s1 || !s2) return 0;\n  if (s1 === s2) return 100;\n  if (s1.includes(s2) || s2.includes(s1)) return 90;\n  const distance = levenshteinDistance(s1, s2);\n  const maxLen = Math.max(s1.length, s2.length);\n  return Math.round(((maxLen - distance) / maxLen) * 100);\n}\n\n// Calcul de matching\nfunction calculateMatch(locataire, virement) {\n  const attendu = parseFloat(locataire.loyer?.toString().replace(',', '.')) || 0;\n  const recu = parseFloat(virement.Credit?.toString().replace(',', '.')) || 0;\n\n  let montantScore = 0;\n  if (attendu === recu) montantScore = 48;\n  else {\n    const diff = Math.abs(attendu - recu);\n    const pct = (diff / attendu) * 100;\n    if (pct <= 1) montantScore = 45;\n    else if (diff <= 5) montantScore = 40;\n    else if (diff <= 10) montantScore = 30;\n    else if (pct <= 5) montantScore = 20;\n  }\n\n  const noms = extractNamesFromLibelle(virement.Libelle);\n  let bestNameSimilarity = 0;\n  for (const name of noms) {\n    const sim = calculateStringSimilarity(locataire.nom, name);\n    if (sim > bestNameSimilarity) bestNameSimilarity = sim;\n  }\n\n  let nomScore = 0;\n  if (bestNameSimilarity >= 90) nomScore = 55;\n  else if (bestNameSimilarity >= 80) nomScore = 45;\n  else if (bestNameSimilarity >= 70) nomScore = 35;\n  else if (bestNameSimilarity >= 60) nomScore = 25;\n  else if (bestNameSimilarity >= 50) nomScore = 15;\n\n  const totalScore = montantScore + nomScore;\n\n  return {\n    lieu: locataire.lieu || null,\n    nom: locataire.nom,\n    loyer: attendu,\n    id: virement.id,\n    dateValeur: virement['Date valeur'],\n    libelle: virement.Libelle,\n    credit: recu,\n    score: totalScore,\n    bestNameSimilarity,\n    montantScore,\n    nomScore,\n  };\n}\n\n// Appliquer le fuzzy matching pour chaque locataire\nconst output = locataires.map(l => {\n  const scores = virements.map(v => calculateMatch(l.json, v.json));\n  scores.sort((a, b) => b.score - a.score); // Tri décroissant\n  return { json: scores[0] }; // Meilleur match\n});\n\nreturn output;\n"
+      },
+      "id": "370ceca5-882b-48e3-bda3-263f585ad3f5",
+      "name": "Calculate Score",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        460,
+        2620
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "723c268a-5cef-4c38-856d-35c5af91d2da",
+      "name": "Merge Many to Many",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2.1,
+      "position": [
+        280,
+        2605
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.lieu.toUpperCase().normalize(\"NFD\").replace(/[\\u0300-\\u036f]/g, \"\") }}",
+                    "rightValue": "VIAGER",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "01a97627-1a39-4e11-aaae-d2e800870e0a"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "viager"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "2dec118b-0430-479f-b3df-83751bd538f0",
+                    "leftValue": "={{ $json.lieu.toUpperCase().normalize(\"NFD\").replace(/[\\u0300-\\u036f]/g, \"\") }}",
+                    "rightValue": "FONNEUVE",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "fonneuve"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "e551a7d1-b8c8-4db0-892d-5d1291185562",
+                    "leftValue": "={{ $json.lieu.toUpperCase().normalize(\"NFD\").replace(/[\\u0300-\\u036f]/g, \"\") }}",
+                    "rightValue": "THIERS",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "thiers"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "1b83817a-fdd8-4927-8e66-aad445210d62",
+                    "leftValue": "={{ $json.lieu.toUpperCase().normalize(\"NFD\").replace(/[\\u0300-\\u036f]/g, \"\") }}",
+                    "rightValue": "ANGOULEME",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "angouleme"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "f05d9b32-c2d9-4da6-8864-ce7b61747a96",
+                    "leftValue": "={{ $json.lieu.toUpperCase().normalize(\"NFD\").replace(/[\\u0300-\\u036f]/g, \"\") }}",
+                    "rightValue": "GOND PONTOUVRE",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "gond pontouvre"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "7ae7631a-c126-41ba-9654-2ab86c9169bd",
+                    "leftValue": "={{ $json.lieu.toUpperCase().normalize(\"NFD\").replace(/[\\u0300-\\u036f]/g, \"\") }}",
+                    "rightValue": "SOYAUX",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "soyaux"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        1920,
+        2500
+      ],
+      "id": "47503445-d6e4-4603-9432-5bc7662df982",
+      "name": "Switch"
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "{{GOOGLE_SHEET_ID}}",
+          "mode": "list",
+          "cachedResultName": "{{SHEET_NAME}}",
+          "cachedResultUrl": "https://docs.example.com/redacted"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "{{SHEET_GID_OR_NAME}}",
+          "mode": "list",
+          "cachedResultName": "{{SHEET_NAME}}",
+          "cachedResultUrl": "https://docs.example.com/redacted"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "mois": "={{ \n  (() => {\n    const date = new Date();\n    date.setMonth(date.getMonth() - 1);\n    return date.toLocaleDateString('fr-FR', { month: 'long' }).toLowerCase();\n  })()\n}}",
+            "TENANT_1_montant": "={{ $json.JULLIOT_montant }}",
+            "TENANT_1_date": "={{ $json.JULLIOT_date }}",
+            "TENANT_1_libelle": "={{ $json.JULLIOT_libelle }}",
+            "TENANT_2_montant": "={{ $json.CHARLES_PERRINE_montant }}",
+            "TENANT_2_libelle": "={{ $json.CHARLES_PERRINE_libelle }}",
+            "TENANT_3_date": "={{ $json.ALEX_SHQEIF_date }}",
+            "TENANT_3_libelle": "={{ $json.ALEX_SHQEIF_libelle }}",
+            "TENANT_3_montant": "={{ $json.ALEX_SHQEIF_montant }}",
+            "TENANT_4_date": "={{ $json.GENDRE_ALICIA_date }}",
+            "TENANT_4_libelle": "={{ $json.GENDRE_ALICIA_libelle }}",
+            "TENANT_4_montant": "={{ $json.GENDRE_ALICIA_montant }}",
+            "TENANT_2_date": "={{ $json.CHARLES_PERRINE_date }}"
+          },
+          "matchingColumns": [
+            "mois"
+          ],
+          "schema": [
+            {
+              "id": "mois",
+              "displayName": "mois",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TENANT_1_montant",
+              "displayName": "TENANT_1_montant",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TENANT_1_libelle",
+              "displayName": "TENANT_1_libelle",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TENANT_1_date",
+              "displayName": "TENANT_1_date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TENANT_2_montant",
+              "displayName": "TENANT_2_montant",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TENANT_2_libelle",
+              "displayName": "TENANT_2_libelle",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TENANT_2_date",
+              "displayName": "TENANT_2_date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TENANT_4_montant",
+              "displayName": "TENANT_4_montant",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TENANT_4_libelle",
+              "displayName": "TENANT_4_libelle",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TENANT_4_date",
+              "displayName": "TENANT_4_date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TENANT_3_montant",
+              "displayName": "TENANT_3_montant",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TENANT_3_libelle",
+              "displayName": "TENANT_3_libelle",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TENANT_3_date",
+              "displayName": "TENANT_3_date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.6,
+      "position": [
+        3860,
+        1680
+      ],
+      "id": "14498db6-1702-4ffb-be62-015fa4a2aa0c",
+      "name": "Append or update row in sheet3",
+      "credentials": {},
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "{{GOOGLE_SHEET_ID}}",
+          "mode": "list",
+          "cachedResultName": "{{SHEET_NAME}}",
+          "cachedResultUrl": "https://docs.example.com/redacted"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "{{SHEET_GID_OR_NAME}}",
+          "mode": "list",
+          "cachedResultName": "{{SHEET_NAME}}",
+          "cachedResultUrl": "https://docs.example.com/redacted"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.6,
+      "position": [
+        -160,
+        2505
+      ],
+      "id": "3d92bc33-2918-4b39-b23e-95cda8827fb0",
+      "name": "Get expected rent",
+      "credentials": {}
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "{{GOOGLE_SHEET_ID}}",
+          "mode": "list",
+          "cachedResultName": "{{SHEET_NAME}}",
+          "cachedResultUrl": "https://docs.example.com/redacted"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "{{SHEET_GID_OR_NAME}}",
+          "mode": "list",
+          "cachedResultName": "{{SHEET_NAME}}",
+          "cachedResultUrl": "https://docs.example.com/redacted"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.6,
+      "position": [
+        -160,
+        2705
+      ],
+      "id": "369e4384-d912-408b-8673-79206a18f2c8",
+      "name": "Get bank transfer",
+      "credentials": {}
+    },
+    {
+      "parameters": {
+        "jsCode": "const rows = $input.all(); // Récupère tous les items\n\nconst result = rows\n  .map(({ json }) => {\n    const nom = json['NOM'];\n    const loyer = json['LOYER'];\n    const lieu = json['LIEU'];\n\n    // Vérifie que les données sont valides\n    if (nom && !isNaN(loyer)) {\n      return {\n        nom: nom.trim(),\n        loyer: parseFloat(loyer.toString().replace(',', '.')),\n        lieu: (lieu || '').toString().trim()\n      };\n    } else {\n      return null;\n    }\n  })\n  .filter(Boolean) // Supprime les lignes nulles\n  .map(data => ({ json: data }));\n\nreturn result;\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        60,
+        2500
+      ],
+      "id": "5ec7ece4-ffc3-4497-9a12-a5daf6a61bd0",
+      "name": "expected_rent_parsing"
+    },
+    {
+      "parameters": {
+        "jsCode": "return items\n  .filter(item => {\n    const credit = item.json['Credit'];\n    const libelle = (item.json['Libelle'] || '').toUpperCase();\n    \n    // Inclut uniquement les lignes avec un crédit défini\n    // Et dont le libellé ne contient ni \"PLACEHOLDER_A\" ni \"PLACEHOLDER_B\"\n    return credit &&\n           credit !== '[empty]' &&\n           !libelle.includes('PLACEHOLDER_A') &&\n           !libelle.includes('PLACEHOLDER_B');\n  })\n  .map((item, index) => {\n    const { ['Date valeur']: dateVal, Libelle, Credit } = item.json;\n    return {\n      json: {\n        id: index,\n        'Date valeur': dateVal,\n        'Libelle': Libelle,\n        'Credit': Credit\n      }\n    };\n  });\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        60,
+        2705
+      ],
+      "id": "a25b761c-1e0d-4eb8-89cd-b06c255e1b7c",
+      "name": "bank_parsing"
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "{{GOOGLE_SHEET_ID}}",
+          "mode": "list",
+          "cachedResultName": "{{SHEET_NAME}}",
+          "cachedResultUrl": "https://docs.example.com/redacted"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "{{SHEET_GID_OR_NAME}}",
+          "mode": "list",
+          "cachedResultName": "{{SHEET_NAME}}",
+          "cachedResultUrl": "https://docs.example.com/redacted"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "mois": "={{ \n  (() => {\n    const date = new Date();\n    date.setMonth(date.getMonth() - 1);\n    return date.toLocaleDateString('fr-FR', { month: 'long' }).toLowerCase();\n  })()\n}}",
+            "TENANT_5_montant": "={{ $json.AUDINETTE_montant }}",
+            "TENANT_5_libelle": "={{ $json.AUDINETTE_libelle }}",
+            "TENANT_5_date": "={{ $json.AUDINETTE_date }}"
+          },
+          "matchingColumns": [
+            "mois"
+          ],
+          "schema": [
+            {
+              "id": "mois",
+              "displayName": "mois",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TENANT_5_montant",
+              "displayName": "TENANT_5_montant",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TENANT_5_libelle",
+              "displayName": "TENANT_5_libelle",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TENANT_5_date",
+              "displayName": "TENANT_5_date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.6,
+      "position": [
+        3840,
+        2180
+      ],
+      "id": "d7854514-dde2-4b3c-8279-74cf33e73d9c",
+      "name": "Append or update row in sheet",
+      "credentials": {},
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "{{GOOGLE_SHEET_ID}}",
+          "mode": "list",
+          "cachedResultName": "{{SHEET_NAME}}",
+          "cachedResultUrl": "https://docs.example.com/redacted"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "{{SHEET_GID_OR_NAME}}",
+          "mode": "list",
+          "cachedResultName": "{{SHEET_NAME}}",
+          "cachedResultUrl": "https://docs.example.com/redacted"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "mois": "={{ \n  (() => {\n    const date = new Date();\n    date.setMonth(date.getMonth() - 1);\n    return date.toLocaleDateString('fr-FR', { month: 'long' }).toLowerCase();\n  })()\n}}",
+            "TENANT_6_montant": "={{ $json.HICHAM_montant }}",
+            "TENANT_6_libelle": "={{ $json.HICHAM_libelle }}",
+            "TENANT_6_date": "={{ $json.HICHAM_date }}",
+            "TENANT_7_montant": "={{ $json.INGRID_PERROT_montant }}",
+            "TENANT_7_libelle": "={{ $json.INGRID_PERROT_libelle }}",
+            "TENANT_7_date": "={{ $json.INGRID_PERROT_date }}",
+            "INGRID_PERROT1_date": "={{ $json.INGRID_PERROT1_date }}",
+            "INGRID_PERROT1_libelle": "={{ $json.INGRID_PERROT1_libelle }}",
+            "INGRID_PERROT1_montant": "={{ $json.INGRID_PERROT1_montant }}"
+          },
+          "matchingColumns": [
+            "mois"
+          ],
+          "schema": [
+            {
+              "id": "mois",
+              "displayName": "mois",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TENANT_7_montant",
+              "displayName": "TENANT_7_montant",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TENANT_7_libelle",
+              "displayName": "TENANT_7_libelle",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TENANT_7_date",
+              "displayName": "TENANT_7_date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "INGRID_PERROT1_montant",
+              "displayName": "INGRID_PERROT1_montant",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "INGRID_PERROT1_libelle",
+              "displayName": "INGRID_PERROT1_libelle",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "INGRID_PERROT1_date",
+              "displayName": "INGRID_PERROT1_date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TENANT_6_montant",
+              "displayName": "TENANT_6_montant",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TENANT_6_libelle",
+              "displayName": "TENANT_6_libelle",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TENANT_6_date",
+              "displayName": "TENANT_6_date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.6,
+      "position": [
+        3840,
+        2960
+      ],
+      "id": "ef75e12c-e28b-4b4c-9888-a625055c5b24",
+      "name": "Append or update row in sheet4",
+      "credentials": {},
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "{{GOOGLE_SHEET_ID}}",
+          "mode": "list",
+          "cachedResultName": "{{SHEET_NAME}}",
+          "cachedResultUrl": "https://docs.example.com/redacted"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "{{SHEET_GID_OR_NAME}}",
+          "mode": "list",
+          "cachedResultName": "{{SHEET_NAME}}",
+          "cachedResultUrl": "https://docs.example.com/redacted"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "mois": "={{ \n  (() => {\n    const date = new Date();\n    date.setMonth(date.getMonth() - 1);\n    return date.toLocaleDateString('fr-FR', { month: 'long' }).toLowerCase();\n  })()\n}}",
+            "TENANT_8_montant": "={{ $json.MOULIN_montant }}",
+            "TENANT_8_libelle": "={{ $json.MOULIN_libelle }}",
+            "TENANT_8_date": "={{ $json.MOULIN_date }}",
+            "TENANT_9_montant": "={{ $json.COLOMBANI_montant }}",
+            "TENANT_9_libelle": "={{ $json.COLOMBANI_libelle }}",
+            "TENANT_9_date": "={{ $json.COLOMBANI_date }}"
+          },
+          "matchingColumns": [
+            "mois"
+          ],
+          "schema": [
+            {
+              "id": "mois",
+              "displayName": "mois",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TENANT_8_montant",
+              "displayName": "TENANT_8_montant",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TENANT_8_libelle",
+              "displayName": "TENANT_8_libelle",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TENANT_8_date",
+              "displayName": "TENANT_8_date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TENANT_9_montant",
+              "displayName": "TENANT_9_montant",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TENANT_9_libelle",
+              "displayName": "TENANT_9_libelle",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TENANT_9_date",
+              "displayName": "TENANT_9_date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.6,
+      "position": [
+        3800,
+        3480
+      ],
+      "id": "aed3699f-b8fe-492e-baa0-0c242dc34bbd",
+      "name": "Append or update row in sheet5",
+      "credentials": {},
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "{{GOOGLE_SHEET_ID}}",
+          "mode": "list",
+          "cachedResultName": "{{SHEET_NAME}}",
+          "cachedResultUrl": "https://docs.example.com/redacted"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "{{SHEET_GID_OR_NAME}}",
+          "mode": "list",
+          "cachedResultName": "{{SHEET_NAME}}",
+          "cachedResultUrl": "https://docs.example.com/redacted"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "mois": "={{ \n  (() => {\n    const date = new Date();\n    date.setMonth(date.getMonth() - 1);\n    return date.toLocaleDateString('fr-FR', { month: 'long' }).toLowerCase();\n  })()\n}}",
+            "TENANT_10_montant": "={{ $json.LAMALLAOUI_montant }}",
+            "TENANT_10_libelle": "={{ $json.LAMALLAOUI_libelle }}",
+            "TENANT_10_date": "={{ $json.LAMALLAOUI_date }}",
+            "TENANT_11_montant": "={{ $json.ZIANE_HAMIDI_montant }}",
+            "TENANT_11_libelle": "={{ $json.ZIANE_HAMIDI_libelle }}",
+            "TENANT_11_date": "={{ $json.ZIANE_HAMIDI_date }}",
+            "TENANT_12_date": "={{ $json.ARIANE_LUSSIN_date }}",
+            "TENANT_12_libelle": "={{ $json.ARIANE_LUSSIN_libelle }}",
+            "TENANT_12_montant": "={{ $json.ARIANE_LUSSIN_montant }}"
+          },
+          "matchingColumns": [
+            "mois"
+          ],
+          "schema": [
+            {
+              "id": "mois",
+              "displayName": "mois",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TENANT_11_montant",
+              "displayName": "TENANT_11_montant",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TENANT_11_libelle",
+              "displayName": "TENANT_11_libelle",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TENANT_11_date",
+              "displayName": "TENANT_11_date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TENANT_10_montant",
+              "displayName": "TENANT_10_montant",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TENANT_10_libelle",
+              "displayName": "TENANT_10_libelle",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TENANT_10_date",
+              "displayName": "TENANT_10_date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TENANT_12_montant",
+              "displayName": "TENANT_12_montant",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TENANT_12_libelle",
+              "displayName": "TENANT_12_libelle",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TENANT_12_date",
+              "displayName": "TENANT_12_date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.6,
+      "position": [
+        3840,
+        2520
+      ],
+      "id": "6d8013df-be8c-42d0-8533-6e7258c015a3",
+      "name": "Append or update row in sheet6",
+      "credentials": {},
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "{{GOOGLE_SHEET_ID}}",
+          "mode": "list",
+          "cachedResultName": "{{SHEET_NAME}}",
+          "cachedResultUrl": "https://docs.example.com/redacted"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "{{SHEET_GID_OR_NAME}}",
+          "mode": "list",
+          "cachedResultName": "{{SHEET_NAME}}",
+          "cachedResultUrl": "https://docs.example.com/redacted"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "mois": "={{ \n  (() => {\n    const date = new Date();\n    date.setMonth(date.getMonth() - 1);\n    return date.toLocaleDateString('fr-FR', { month: 'long' }).toLowerCase();\n  })()\n}}",
+            "TENANT_13_montant": "={{ $json.LAGE_montant }}",
+            "TENANT_13_libelle": "={{ $json.LAGE_libelle }}",
+            "TENANT_13_date": "={{ $json.LAGE_date }}",
+            "TENANT_14_montant": "={{ $json.HARDY_montant }}",
+            "TENANT_14_libelle": "={{ $json.HARDY_libelle }}",
+            "TENANT_14_date": "={{ $json.HARDY_date }}",
+            "TENANT_15_montant": "={{ $json.PICAS_montant }}",
+            "TENANT_15_libelle": "={{ $json.PICAS_libelle }}",
+            "TENANT_15_date": "={{ $json.PICAS_date }}",
+            "TENANT_16_montant": "={{ $json.BEAU_montant }}",
+            "TENANT_16_libelle": "={{ $json.BEAU_libelle }}",
+            "TENANT_16_date": "={{ $json.BEAU_date }}"
+          },
+          "matchingColumns": [
+            "mois"
+          ],
+          "schema": [
+            {
+              "id": "mois",
+              "displayName": "mois",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TENANT_13_montant",
+              "displayName": "TENANT_13_montant",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TENANT_13_libelle",
+              "displayName": "TENANT_13_libelle",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TENANT_13_date",
+              "displayName": "TENANT_13_date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TENANT_14_montant",
+              "displayName": "TENANT_14_montant",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TENANT_14_libelle",
+              "displayName": "TENANT_14_libelle",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TENANT_14_date",
+              "displayName": "TENANT_14_date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TENANT_15_montant",
+              "displayName": "TENANT_15_montant",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TENANT_15_libelle",
+              "displayName": "TENANT_15_libelle",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TENANT_15_date",
+              "displayName": "TENANT_15_date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TENANT_16_montant",
+              "displayName": "TENANT_16_montant",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TENANT_16_libelle",
+              "displayName": "TENANT_16_libelle",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TENANT_16_date",
+              "displayName": "TENANT_16_date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.6,
+      "position": [
+        3800,
+        3880
+      ],
+      "id": "b38ee1b4-67e0-44ae-8f4c-6a3ebcfcfaef",
+      "name": "Append or update row in sheet7",
+      "credentials": {},
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "id": "e4602e73-9b68-4374-96ec-54ee95ef93db",
+                    "leftValue": "={{ $json.score }}",
+                    "rightValue": 49,
+                    "operator": {
+                      "type": "number",
+                      "operation": "lte"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "incertain"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "id": "653c0be9-8d4a-48c7-b665-7984745ccfa0",
+                    "leftValue": "={{ $json.score }}",
+                    "rightValue": 50,
+                    "operator": {
+                      "type": "number",
+                      "operation": "gte"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "perfectMatch"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "28db6883-4710-4912-b9da-70c83e6c153d",
+      "name": "Switch VIAGER",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        2780,
+        1660
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "id": "653c0be9-8d4a-48c7-b665-7984745ccfa0",
+                    "leftValue": "={{ $json.score }}",
+                    "rightValue": 50,
+                    "operator": {
+                      "type": "number",
+                      "operation": "gte"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "perfectMatch"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "id": "e4602e73-9b68-4374-96ec-54ee95ef93db",
+                    "leftValue": "={{ $json.score }}",
+                    "rightValue": 49,
+                    "operator": {
+                      "type": "number",
+                      "operation": "lte"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "incertain"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "2a3f2d49-49aa-4934-93e2-371f14dcf930",
+      "name": "Switch FONNEUVE",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        2800,
+        2160
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "id": "653c0be9-8d4a-48c7-b665-7984745ccfa0",
+                    "leftValue": "={{ $json.score }}",
+                    "rightValue": 50,
+                    "operator": {
+                      "type": "number",
+                      "operation": "gte"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "perfectMatch"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "id": "e4602e73-9b68-4374-96ec-54ee95ef93db",
+                    "leftValue": "={{ $json.score }}",
+                    "rightValue": 49,
+                    "operator": {
+                      "type": "number",
+                      "operation": "lte"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "incertain"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "decabbe7-27a7-4f2a-8013-8cb95b99b15a",
+      "name": "Switch THIERS",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        2840,
+        2540
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "id": "653c0be9-8d4a-48c7-b665-7984745ccfa0",
+                    "leftValue": "={{ $json.score }}",
+                    "rightValue": 50,
+                    "operator": {
+                      "type": "number",
+                      "operation": "gte"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "perfectMatch"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "id": "e4602e73-9b68-4374-96ec-54ee95ef93db",
+                    "leftValue": "={{ $json.score }}",
+                    "rightValue": 49,
+                    "operator": {
+                      "type": "number",
+                      "operation": "lte"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "incertain"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "ff724b5b-50a4-4b36-9a4e-c307a4d88e6b",
+      "name": "Switch GOND PONTOUVRE",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        2880,
+        3420
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "id": "653c0be9-8d4a-48c7-b665-7984745ccfa0",
+                    "leftValue": "={{ $json.score }}",
+                    "rightValue": 50,
+                    "operator": {
+                      "type": "number",
+                      "operation": "gte"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "perfectMatch"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "id": "e4602e73-9b68-4374-96ec-54ee95ef93db",
+                    "leftValue": "={{ $json.score }}",
+                    "rightValue": 49,
+                    "operator": {
+                      "type": "number",
+                      "operation": "lte"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "incertain"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "307c233a-7d77-4764-a741-7d4cf5a49989",
+      "name": "Switch SOYAUX",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        2840,
+        3800
+      ]
+    },
+    {
+      "parameters": {
+        "sortFieldsUi": {
+          "sortField": [
+            {
+              "fieldName": "score",
+              "order": "descending"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.sort",
+      "typeVersion": 1,
+      "position": [
+        600,
+        2620
+      ],
+      "id": "96b8e07f-8fd7-4dee-a164-7284025fb6c3",
+      "name": "Sort"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "id": "653c0be9-8d4a-48c7-b665-7984745ccfa0",
+                    "leftValue": "={{ $json.score }}",
+                    "rightValue": 50,
+                    "operator": {
+                      "type": "number",
+                      "operation": "gte"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "perfectMatch"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "id": "e4602e73-9b68-4374-96ec-54ee95ef93db",
+                    "leftValue": "={{ $json.score }}",
+                    "rightValue": 49,
+                    "operator": {
+                      "type": "number",
+                      "operation": "lte"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "incertain"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "27b66aea-130e-4227-a74a-1287ef204426",
+      "name": "Switch ANGOULEME",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        2860,
+        2960
+      ]
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "{{GOOGLE_SHEET_ID}}",
+          "mode": "list",
+          "cachedResultName": "{{SHEET_NAME}}",
+          "cachedResultUrl": "https://docs.example.com/redacted"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "{{SHEET_GID_OR_NAME}}",
+          "mode": "list",
+          "cachedResultName": "{{SHEET_NAME}}",
+          "cachedResultUrl": "https://docs.example.com/redacted"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "mois",
+              "lookupValue": "={{ \n  (() => {\n    const date = new Date();\n    date.setMonth(date.getMonth() - 1);\n    return date.toLocaleDateString('fr-FR', { month: 'long' }).toLowerCase();\n  })()\n}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.6,
+      "position": [
+        3060,
+        1560
+      ],
+      "id": "491109fa-ba45-4130-9927-1aec9d171764",
+      "name": "Get données existantes",
+      "credentials": {}
+    },
+    {
+      "parameters": {
+        "jsCode": "const [existing, incoming] = $input.all().map(item => item.json);\n\n// Si pas de nom, on ne peut pas continuer\nif (!incoming.nom) {\n  throw new Error(\"Champ 'nom' manquant dans la ligne entrante\");\n}\n\n// Préfixe de colonnes à mettre à jour : JULLIOT_montant, etc.\nconst prefix = incoming.nom.trim().toUpperCase().replace(/\\s/g, '');\n\n// Mise à jour des champs dynamiques\nexisting[`${prefix}_montant`] = incoming.credit || '';\nexisting[`${prefix}_libelle`] = incoming.libelle || '';\nexisting[`${prefix}_date`] = incoming.dateValeur || '';\n\n// Mise à jour du mois si absent\nif (!existing.mois && incoming.dateValeur) {\n  const [jour, mois, annee] = incoming.dateValeur.split('/');\n  const moisStr = new Date(`${annee}-${mois}-${jour}`)\n    .toLocaleDateString('fr-FR', { month: 'long' })\n    .toLowerCase();\n  existing.mois = moisStr;\n}\n\n// Renvoi d'un seul objet prêt à être écrit dans la feuille\nreturn [{ json: existing }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3560,
+        1680
+      ],
+      "id": "7fba4efe-58f7-42b7-93a3-1bf5ac7c51a0",
+      "name": "concatène"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "bbf1855b-f425-4eac-a828-080adfcfeea8",
+              "name": "nom",
+              "value": "={{ $json.nom }}",
+              "type": "string"
+            },
+            {
+              "id": "c843863b-bb39-49b2-b432-b98e60ff9934",
+              "name": "libelle",
+              "value": "={{ $json.libelle }}",
+              "type": "string"
+            },
+            {
+              "id": "60013239-f873-4ee3-b29c-76e1ddf25be5",
+              "name": "credit",
+              "value": "={{ $json.credit }}",
+              "type": "number"
+            },
+            {
+              "id": "fafca376-8bb9-40b9-be75-d642040495f3",
+              "name": "dateValeur",
+              "value": "={{ $json.dateValeur }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        3080,
+        1800
+      ],
+      "id": "6e409271-fd3a-4c14-b775-aa745b1842ff",
+      "name": "Edit Fields"
+    },
+    {
+      "parameters": {},
+      "id": "82a10133-1fbe-4eea-8da4-ee1c4ac450b1",
+      "name": "Merge Many to Many1",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2.1,
+      "position": [
+        3300,
+        1680
+      ]
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "{{GOOGLE_SHEET_ID}}",
+          "mode": "list",
+          "cachedResultName": "{{SHEET_NAME}}",
+          "cachedResultUrl": "https://docs.example.com/redacted"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "{{SHEET_GID_OR_NAME}}",
+          "mode": "list",
+          "cachedResultName": "{{SHEET_NAME}}",
+          "cachedResultUrl": "https://docs.example.com/redacted"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "mois",
+              "lookupValue": "={{ \n  (() => {\n    const date = new Date();\n    date.setMonth(date.getMonth() - 1);\n    return date.toLocaleDateString('fr-FR', { month: 'long' }).toLowerCase();\n  })()\n}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.6,
+      "position": [
+        3060,
+        2060
+      ],
+      "id": "5622db5b-654e-4856-8046-7d3ba116da86",
+      "name": "Get données existantes1",
+      "credentials": {}
+    },
+    {
+      "parameters": {
+        "jsCode": "const [existing, incoming] = $input.all().map(item => item.json);\n\n// Si pas de nom, on ne peut pas continuer\nif (!incoming.nom) {\n  throw new Error(\"Champ 'nom' manquant dans la ligne entrante\");\n}\n\n// Préfixe de colonnes à mettre à jour : JULLIOT_montant, etc.\nconst prefix = incoming.nom.trim().toUpperCase().replace(/\\s/g, '');\n\n// Mise à jour des champs dynamiques\nexisting[`${prefix}_montant`] = incoming.credit || '';\nexisting[`${prefix}_libelle`] = incoming.libelle || '';\nexisting[`${prefix}_date`] = incoming.dateValeur || '';\n\n// Mise à jour du mois si absent\nif (!existing.mois && incoming.dateValeur) {\n  const [jour, mois, annee] = incoming.dateValeur.split('/');\n  const moisStr = new Date(`${annee}-${mois}-${jour}`)\n    .toLocaleDateString('fr-FR', { month: 'long' })\n    .toLowerCase();\n  existing.mois = moisStr;\n}\n\n// Renvoi d'un seul objet prêt à être écrit dans la feuille\nreturn [{ json: existing }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3520,
+        2180
+      ],
+      "id": "2ad27a93-2ceb-48da-9e96-5f87330d5d44",
+      "name": "concatène1"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "bbf1855b-f425-4eac-a828-080adfcfeea8",
+              "name": "nom",
+              "value": "={{ $json.nom }}",
+              "type": "string"
+            },
+            {
+              "id": "c843863b-bb39-49b2-b432-b98e60ff9934",
+              "name": "libelle",
+              "value": "={{ $json.libelle }}",
+              "type": "string"
+            },
+            {
+              "id": "60013239-f873-4ee3-b29c-76e1ddf25be5",
+              "name": "credit",
+              "value": "={{ $json.credit }}",
+              "type": "number"
+            },
+            {
+              "id": "fafca376-8bb9-40b9-be75-d642040495f3",
+              "name": "dateValeur",
+              "value": "={{ $json.dateValeur }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        3060,
+        2260
+      ],
+      "id": "839afe90-b3ed-44f3-99f5-735e6501d3c8",
+      "name": "Edit Fields1"
+    },
+    {
+      "parameters": {},
+      "id": "fbb040fa-853a-4e00-ac63-b0d7fddd1735",
+      "name": "Merge Many to Many2",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2.1,
+      "position": [
+        3280,
+        2180
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "{{GOOGLE_SHEET_ID}}",
+          "mode": "list",
+          "cachedResultName": "{{SHEET_NAME}}",
+          "cachedResultUrl": "https://docs.example.com/redacted"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "{{SHEET_GID_OR_NAME}}",
+          "mode": "list",
+          "cachedResultName": "{{SHEET_NAME}}",
+          "cachedResultUrl": "https://docs.example.com/redacted"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "MOIS": "={{    (() => {     const date = new Date();     date.setMonth(date.getMonth() - 1);     return date.toLocaleDateString('fr-FR', { month: 'long' }).toLowerCase();   })() }}",
+            "LIEU": "={{ $json.lieu }}",
+            "NOM": "={{ $json.nom }}",
+            "LOYER": "={{ $json.loyer }}",
+            "DATE": "={{ $json.dateValeur }}",
+            "LIBELLE": "={{ $json.libelle }}",
+            "CREDIT": "={{ $json.credit }}",
+            "SCORE_TOTAL": "={{ $json.score }}",
+            "NAME_SIMILARITY": "={{ $json.bestNameSimilarity }}",
+            "CREDIT_SCORE": "={{ $json.montantScore }}",
+            "NOM_SCORE": "={{ $json.nomScore }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "MOIS",
+              "displayName": "MOIS",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "LIEU",
+              "displayName": "LIEU",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "NOM",
+              "displayName": "NOM",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "LOYER",
+              "displayName": "LOYER",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "DATE",
+              "displayName": "DATE",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "LIBELLE",
+              "displayName": "LIBELLE",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "CREDIT",
+              "displayName": "CREDIT",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "SCORE_TOTAL",
+              "displayName": "SCORE_TOTAL",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "NAME_SIMILARITY",
+              "displayName": "NAME_SIMILARITY",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "CREDIT_SCORE",
+              "displayName": "CREDIT_SCORE",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "NOM_SCORE",
+              "displayName": "NOM_SCORE",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {
+          "useAppend": true
+        }
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.6,
+      "position": [
+        2180,
+        1400
+      ],
+      "id": "bc09ec8c-5ad8-4e16-875e-ccc4b94bb7c1",
+      "name": "LOG INCERTAIN",
+      "credentials": {}
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "{{GOOGLE_SHEET_ID}}",
+          "mode": "list",
+          "cachedResultName": "{{SHEET_NAME}}",
+          "cachedResultUrl": "https://docs.example.com/redacted"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "{{SHEET_GID_OR_NAME}}",
+          "mode": "list",
+          "cachedResultName": "{{SHEET_NAME}}",
+          "cachedResultUrl": "https://docs.example.com/redacted"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "mois",
+              "lookupValue": "={{ \n  (() => {\n    const date = new Date();\n    date.setMonth(date.getMonth() - 1);\n    return date.toLocaleDateString('fr-FR', { month: 'long' }).toLowerCase();\n  })()\n}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.6,
+      "position": [
+        3040,
+        2460
+      ],
+      "id": "87996e92-e523-456a-877c-3d402e48373b",
+      "name": "Get données existantes2",
+      "credentials": {}
+    },
+    {
+      "parameters": {
+        "jsCode": "const [existing, incoming] = $input.all().map(item => item.json);\n\n// Si pas de nom, on ne peut pas continuer\nif (!incoming.nom) {\n  throw new Error(\"Champ 'nom' manquant dans la ligne entrante\");\n}\n\n// Préfixe de colonnes à mettre à jour : JULLIOT_montant, etc.\nconst prefix = incoming.nom.trim().toUpperCase().replace(/\\s/g, '');\n\n// Mise à jour des champs dynamiques\nexisting[`${prefix}_montant`] = incoming.credit || '';\nexisting[`${prefix}_libelle`] = incoming.libelle || '';\nexisting[`${prefix}_date`] = incoming.dateValeur || '';\n\n// Mise à jour du mois si absent\nif (!existing.mois && incoming.dateValeur) {\n  const [jour, mois, annee] = incoming.dateValeur.split('/');\n  const moisStr = new Date(`${annee}-${mois}-${jour}`)\n    .toLocaleDateString('fr-FR', { month: 'long' })\n    .toLowerCase();\n  existing.mois = moisStr;\n}\n\n// Renvoi d'un seul objet prêt à être écrit dans la feuille\nreturn [{ json: existing }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3480,
+        2520
+      ],
+      "id": "e4e75d5e-bb78-4248-806d-39627e61d39e",
+      "name": "concatène2"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "bbf1855b-f425-4eac-a828-080adfcfeea8",
+              "name": "nom",
+              "value": "={{ $json.nom }}",
+              "type": "string"
+            },
+            {
+              "id": "c843863b-bb39-49b2-b432-b98e60ff9934",
+              "name": "libelle",
+              "value": "={{ $json.libelle }}",
+              "type": "string"
+            },
+            {
+              "id": "60013239-f873-4ee3-b29c-76e1ddf25be5",
+              "name": "credit",
+              "value": "={{ $json.credit }}",
+              "type": "number"
+            },
+            {
+              "id": "fafca376-8bb9-40b9-be75-d642040495f3",
+              "name": "dateValeur",
+              "value": "={{ $json.dateValeur }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        3040,
+        2620
+      ],
+      "id": "8488ef28-1208-4609-9228-8b139a88b7d8",
+      "name": "Edit Fields2"
+    },
+    {
+      "parameters": {},
+      "id": "438db476-c1bc-4803-a5e2-7b0a5a601a67",
+      "name": "Merge Many to Many3",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2.1,
+      "position": [
+        3280,
+        2520
+      ]
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "{{GOOGLE_SHEET_ID}}",
+          "mode": "list",
+          "cachedResultName": "{{SHEET_NAME}}",
+          "cachedResultUrl": "https://docs.example.com/redacted"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "{{SHEET_GID_OR_NAME}}",
+          "mode": "list",
+          "cachedResultName": "{{SHEET_NAME}}",
+          "cachedResultUrl": "https://docs.example.com/redacted"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "mois",
+              "lookupValue": "={{ \n  (() => {\n    const date = new Date();\n    date.setMonth(date.getMonth() - 1);\n    return date.toLocaleDateString('fr-FR', { month: 'long' }).toLowerCase();\n  })()\n}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.6,
+      "position": [
+        3040,
+        2840
+      ],
+      "id": "fe25d917-79bc-40bb-8816-2fb6586204f5",
+      "name": "Get données existantes3",
+      "credentials": {}
+    },
+    {
+      "parameters": {
+        "jsCode": "const [existing, incoming] = $input.all().map(item => item.json);\n\n// Si pas de nom, on ne peut pas continuer\nif (!incoming.nom) {\n  throw new Error(\"Champ 'nom' manquant dans la ligne entrante\");\n}\n\n// Préfixe de colonnes à mettre à jour : JULLIOT_montant, etc.\nconst prefix = incoming.nom.trim().toUpperCase().replace(/\\s/g, '');\n\n// Mise à jour des champs dynamiques\nexisting[`${prefix}_montant`] = incoming.credit || '';\nexisting[`${prefix}_libelle`] = incoming.libelle || '';\nexisting[`${prefix}_date`] = incoming.dateValeur || '';\n\n// Mise à jour du mois si absent\nif (!existing.mois && incoming.dateValeur) {\n  const [jour, mois, annee] = incoming.dateValeur.split('/');\n  const moisStr = new Date(`${annee}-${mois}-${jour}`)\n    .toLocaleDateString('fr-FR', { month: 'long' })\n    .toLowerCase();\n  existing.mois = moisStr;\n}\n\n// Renvoi d'un seul objet prêt à être écrit dans la feuille\nreturn [{ json: existing }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3500,
+        2960
+      ],
+      "id": "475f4e83-5dcd-4557-b1e0-7580f3b02c0f",
+      "name": "concatène3"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "bbf1855b-f425-4eac-a828-080adfcfeea8",
+              "name": "nom",
+              "value": "={{ $json.nom }}",
+              "type": "string"
+            },
+            {
+              "id": "c843863b-bb39-49b2-b432-b98e60ff9934",
+              "name": "libelle",
+              "value": "={{ $json.libelle }}",
+              "type": "string"
+            },
+            {
+              "id": "60013239-f873-4ee3-b29c-76e1ddf25be5",
+              "name": "credit",
+              "value": "={{ $json.credit }}",
+              "type": "number"
+            },
+            {
+              "id": "fafca376-8bb9-40b9-be75-d642040495f3",
+              "name": "dateValeur",
+              "value": "={{ $json.dateValeur }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        3060,
+        3080
+      ],
+      "id": "0eced5c3-0c6d-4b39-9b32-7c103af10129",
+      "name": "Edit Fields3"
+    },
+    {
+      "parameters": {},
+      "id": "e08d27bf-08e9-4dd2-9337-20a8d2142f70",
+      "name": "Merge Many to Many4",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2.1,
+      "position": [
+        3280,
+        2960
+      ]
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "{{GOOGLE_SHEET_ID}}",
+          "mode": "list",
+          "cachedResultName": "{{SHEET_NAME}}",
+          "cachedResultUrl": "https://docs.example.com/redacted"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "{{SHEET_GID_OR_NAME}}",
+          "mode": "list",
+          "cachedResultName": "{{SHEET_NAME}}",
+          "cachedResultUrl": "https://docs.example.com/redacted"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "mois",
+              "lookupValue": "={{ \n  (() => {\n    const date = new Date();\n    date.setMonth(date.getMonth() - 1);\n    return date.toLocaleDateString('fr-FR', { month: 'long' }).toLowerCase();\n  })()\n}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.6,
+      "position": [
+        3060,
+        3340
+      ],
+      "id": "ae89a320-c37a-4453-8522-119f6f0bc0db",
+      "name": "Get données existantes4",
+      "credentials": {}
+    },
+    {
+      "parameters": {
+        "jsCode": "const [existing, incoming] = $input.all().map(item => item.json);\n\n// Si pas de nom, on ne peut pas continuer\nif (!incoming.nom) {\n  throw new Error(\"Champ 'nom' manquant dans la ligne entrante\");\n}\n\n// Préfixe de colonnes à mettre à jour : JULLIOT_montant, etc.\nconst prefix = incoming.nom.trim().toUpperCase().replace(/\\s/g, '');\n\n// Mise à jour des champs dynamiques\nexisting[`${prefix}_montant`] = incoming.credit || '';\nexisting[`${prefix}_libelle`] = incoming.libelle || '';\nexisting[`${prefix}_date`] = incoming.dateValeur || '';\n\n// Mise à jour du mois si absent\nif (!existing.mois && incoming.dateValeur) {\n  const [jour, mois, annee] = incoming.dateValeur.split('/');\n  const moisStr = new Date(`${annee}-${mois}-${jour}`)\n    .toLocaleDateString('fr-FR', { month: 'long' })\n    .toLowerCase();\n  existing.mois = moisStr;\n}\n\n// Renvoi d'un seul objet prêt à être écrit dans la feuille\nreturn [{ json: existing }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3500,
+        3480
+      ],
+      "id": "2ba9a194-608e-4676-9eef-b022e043e145",
+      "name": "concatène4"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "bbf1855b-f425-4eac-a828-080adfcfeea8",
+              "name": "nom",
+              "value": "={{ $json.nom }}",
+              "type": "string"
+            },
+            {
+              "id": "c843863b-bb39-49b2-b432-b98e60ff9934",
+              "name": "libelle",
+              "value": "={{ $json.libelle }}",
+              "type": "string"
+            },
+            {
+              "id": "60013239-f873-4ee3-b29c-76e1ddf25be5",
+              "name": "credit",
+              "value": "={{ $json.credit }}",
+              "type": "number"
+            },
+            {
+              "id": "fafca376-8bb9-40b9-be75-d642040495f3",
+              "name": "dateValeur",
+              "value": "={{ $json.dateValeur }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        3080,
+        3540
+      ],
+      "id": "d9efdee8-b0a8-40a6-abec-6aca7d94abe4",
+      "name": "Edit Fields4"
+    },
+    {
+      "parameters": {},
+      "id": "5687a6b4-74ad-4fc7-94a9-0cb420048cb9",
+      "name": "Merge Many to Many5",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2.1,
+      "position": [
+        3260,
+        3420
+      ]
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "{{GOOGLE_SHEET_ID}}",
+          "mode": "list",
+          "cachedResultName": "{{SHEET_NAME}}",
+          "cachedResultUrl": "https://docs.example.com/redacted"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "{{SHEET_GID_OR_NAME}}",
+          "mode": "list",
+          "cachedResultName": "{{SHEET_NAME}}",
+          "cachedResultUrl": "https://docs.example.com/redacted"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "mois",
+              "lookupValue": "={{ \n  (() => {\n    const date = new Date();\n    date.setMonth(date.getMonth() - 1);\n    return date.toLocaleDateString('fr-FR', { month: 'long' }).toLowerCase();\n  })()\n}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.6,
+      "position": [
+        3060,
+        3780
+      ],
+      "id": "b173e4d4-ac87-4eca-909a-c07be7d9f7b7",
+      "name": "Get données existantes5",
+      "credentials": {}
+    },
+    {
+      "parameters": {
+        "jsCode": "const [existing, incoming] = $input.all().map(item => item.json);\n\n// Si pas de nom, on ne peut pas continuer\nif (!incoming.nom) {\n  throw new Error(\"Champ 'nom' manquant dans la ligne entrante\");\n}\n\n// Préfixe de colonnes à mettre à jour : JULLIOT_montant, etc.\nconst prefix = incoming.nom.trim().toUpperCase().replace(/\\s/g, '');\n\n// Mise à jour des champs dynamiques\nexisting[`${prefix}_montant`] = incoming.credit || '';\nexisting[`${prefix}_libelle`] = incoming.libelle || '';\nexisting[`${prefix}_date`] = incoming.dateValeur || '';\n\n// Mise à jour du mois si absent\nif (!existing.mois && incoming.dateValeur) {\n  const [jour, mois, annee] = incoming.dateValeur.split('/');\n  const moisStr = new Date(`${annee}-${mois}-${jour}`)\n    .toLocaleDateString('fr-FR', { month: 'long' })\n    .toLowerCase();\n  existing.mois = moisStr;\n}\n\n// Renvoi d'un seul objet prêt à être écrit dans la feuille\nreturn [{ json: existing }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3500,
+        3880
+      ],
+      "id": "1ee0e8d7-d40b-4990-88ba-1d176158b365",
+      "name": "concatène5"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "bbf1855b-f425-4eac-a828-080adfcfeea8",
+              "name": "nom",
+              "value": "={{ $json.nom }}",
+              "type": "string"
+            },
+            {
+              "id": "c843863b-bb39-49b2-b432-b98e60ff9934",
+              "name": "libelle",
+              "value": "={{ $json.libelle }}",
+              "type": "string"
+            },
+            {
+              "id": "60013239-f873-4ee3-b29c-76e1ddf25be5",
+              "name": "credit",
+              "value": "={{ $json.credit }}",
+              "type": "number"
+            },
+            {
+              "id": "fafca376-8bb9-40b9-be75-d642040495f3",
+              "name": "dateValeur",
+              "value": "={{ $json.dateValeur }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        3060,
+        3980
+      ],
+      "id": "6d4cd78c-4ca3-403c-8b65-bdb8b77e2262",
+      "name": "Edit Fields5"
+    },
+    {
+      "parameters": {},
+      "id": "7b8e844f-2427-45bb-816b-33a7c6f9eeff",
+      "name": "Merge Many to Many6",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2.1,
+      "position": [
+        3280,
+        3880
+      ]
+    },
+    {
+      "parameters": {
+        "sendTo": "example@email.com",
+        "subject": "Résumé Fuzzy Matching",
+        "message": "={{ $json.htmlTable }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        700,
+        3300
+      ],
+      "id": "5b086448-67f3-4902-a85c-dd4e0bf8c0c1",
+      "name": "Send a message",
+      "webhookId": "a9968151-a8a4-4ee4-9409-1566b4e22f43",
+      "credentials": {},
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "return [\n  {\n    json: {\n      statut: 'incertain',\n    }\n  }\n];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2400,
+        1400
+      ],
+      "id": "fd205c5b-f3b3-4126-8d65-cdfe72a9a33d",
+      "name": "incertain compteur"
+    },
+    {
+      "parameters": {
+        "jsCode": "function safeLength(nodeName) {\n  try {\n    return $items(nodeName).length || 0;\n  } catch (e) {\n    return 0;\n  }\n}\n\n// Récupération des données\nconst nbLocatairesTotal = safeLength(\"expected_rent_parsing\");\nconst nbIncertains = safeLength(\"incertain compteur\");\nconst nbLocatairesTries = nbLocatairesTotal - nbIncertains;\n\n// Horodatage\nconst now = new Date();\nconst timestamp = now.toLocaleString('fr-FR');\n\n// Durée d'exécution\nconst startedAtRaw = $execution?.startedAt;\nconst start = startedAtRaw ? new Date(startedAtRaw) : null;\nconst duration = start ? ((now - start) / 1000).toFixed(2) : null;\n\nreturn [\n  {\n    json: {\n      nbLocatairesTotal,\n      nbIncertains,\n      nbLocatairesTries,\n      timestamp,\n      duration\n    }\n  }\n];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1580,
+        2400
+      ],
+      "id": "5462ed14-05fb-487a-b9ec-fe44f8e3813b",
+      "name": "recap stat"
+    },
+    {
+      "parameters": {
+        "jsCode": "const rows = $input.all().map(item => item.json);\n\n// Générer les en-têtes automatiquement\nconst headers = Object.keys(rows[0]);\n\n// Construire l'en-tête du tableau HTML\nlet html = `<table border=\"1\" cellpadding=\"5\" cellspacing=\"0\" style=\"border-collapse: collapse;\">`;\nhtml += `<tr>${headers.map(h => `<th>${h}</th>`).join('')}</tr>`;\n\n// Construire les lignes du tableau\nfor (const row of rows) {\n  html += `<tr>${headers.map(h => `<td>${row[h] ?? ''}</td>`).join('')}</tr>`;\n}\n\nhtml += `</table>`;\n\n// Génère les 2 items de sortie\nreturn [\n  {\n    json: {\n      htmlTable: html\n    }\n  },\n  {\n    json: {\n      locataireTotal: rows.length\n    }\n  }\n];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        860,
+        2780
+      ],
+      "id": "7837394f-c166-4a4c-962b-7242def28b60",
+      "name": "tab2html and nb locataire compteur"
+    },
+    {
+      "parameters": {
+        "sendTo": "example@email.com",
+        "subject": "Récap action",
+        "message": "=<p>Bonjour,</p>  <p>Le processus de mise à jour de la Google Sheet s'est terminé avec succès.</p>  <ul>    <li>📋 <strong>Nombre total de locataires</strong> : <strong>{{ $json.nbLocatairesTotal }}</strong></li>   <li>✅ <strong>Virements trouvés</strong> : <strong>{{$json.nbLocatairesTries}}</strong></li>   <li>❓ <strong>Cas incertains</strong> : <strong>{{$json.nbIncertains}}</strong></li>   <li>🕒 <strong>Heure d'exécution</strong> : <strong>{{$json.timestamp}}</strong></li> </ul>  <p>Vous pouvez consulter le tableau mis à jour dans la Google Sheet ou directement depuis l'interface.</p>  <p>Bien cordialement,<br> Votre assistant automatisé 🧠</p>\n",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        1760,
+        2400
+      ],
+      "id": "df276b12-83ae-4156-84ba-eb939b7780be",
+      "name": "Send a message1",
+      "webhookId": "c7125345-9f81-49ea-b23d-6731946d9cf2",
+      "credentials": {}
+    },
+    {
+      "parameters": {
+        "amount": 3
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        1380,
+        2720
+      ],
+      "id": "c5f1ab3d-5d3f-4c59-9d55-4c1303ec1801",
+      "name": "Wait",
+      "webhookId": "0566814b-6a16-41f7-bf6d-a9dd1a85510d"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -440,
+        2620
+      ],
+      "id": "8fc5984c-aa2b-4763-9af8-32ae609c532a",
+      "name": "When clicking ‘Execute workflow’",
+      "notesInFlow": true,
+      "notes": "Choose the more convinient way to launch the workflow"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Split In Batches - 1 Locataire": {
+      "main": [
+        [
+          {
+            "node": "recap stat",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Wait",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculate Score": {
+      "main": [
+        [
+          {
+            "node": "Sort",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Many to Many": {
+      "main": [
+        [
+          {
+            "node": "Calculate Score",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch": {
+      "main": [
+        [
+          {
+            "node": "Switch VIAGER",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Switch FONNEUVE",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Switch THIERS",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Switch ANGOULEME",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Switch GOND PONTOUVRE",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Switch SOYAUX",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get expected rent": {
+      "main": [
+        [
+          {
+            "node": "expected_rent_parsing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get bank transfer": {
+      "main": [
+        [
+          {
+            "node": "bank_parsing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "expected_rent_parsing": {
+      "main": [
+        [
+          {
+            "node": "Merge Many to Many",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "bank_parsing": {
+      "main": [
+        [
+          {
+            "node": "Merge Many to Many",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Append or update row in sheet3": {
+      "main": [
+        [
+          {
+            "node": "Split In Batches - 1 Locataire",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Append or update row in sheet": {
+      "main": [
+        [
+          {
+            "node": "Split In Batches - 1 Locataire",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Append or update row in sheet4": {
+      "main": [
+        [
+          {
+            "node": "Split In Batches - 1 Locataire",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Append or update row in sheet6": {
+      "main": [
+        [
+          {
+            "node": "Split In Batches - 1 Locataire",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Append or update row in sheet5": {
+      "main": [
+        [
+          {
+            "node": "Split In Batches - 1 Locataire",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Append or update row in sheet7": {
+      "main": [
+        [
+          {
+            "node": "Split In Batches - 1 Locataire",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch VIAGER": {
+      "main": [
+        [
+          {
+            "node": "LOG INCERTAIN",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Edit Fields",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Get données existantes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch FONNEUVE": {
+      "main": [
+        [
+          {
+            "node": "Get données existantes1",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Edit Fields1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "LOG INCERTAIN",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch THIERS": {
+      "main": [
+        [
+          {
+            "node": "Get données existantes2",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Edit Fields2",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "LOG INCERTAIN",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch GOND PONTOUVRE": {
+      "main": [
+        [
+          {
+            "node": "Get données existantes4",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Edit Fields4",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "LOG INCERTAIN",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch SOYAUX": {
+      "main": [
+        [
+          {
+            "node": "Get données existantes5",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Edit Fields5",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "LOG INCERTAIN",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sort": {
+      "main": [
+        [
+          {
+            "node": "tab2html and nb locataire compteur",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Split In Batches - 1 Locataire",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch ANGOULEME": {
+      "main": [
+        [
+          {
+            "node": "Get données existantes3",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Edit Fields3",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "LOG INCERTAIN",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get données existantes": {
+      "main": [
+        [
+          {
+            "node": "Merge Many to Many1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "concatène": {
+      "main": [
+        [
+          {
+            "node": "Append or update row in sheet3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Fields": {
+      "main": [
+        [
+          {
+            "node": "Merge Many to Many1",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Many to Many1": {
+      "main": [
+        [
+          {
+            "node": "concatène",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get données existantes1": {
+      "main": [
+        [
+          {
+            "node": "Merge Many to Many2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Fields1": {
+      "main": [
+        [
+          {
+            "node": "Merge Many to Many2",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Many to Many2": {
+      "main": [
+        [
+          {
+            "node": "concatène1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "concatène1": {
+      "main": [
+        [
+          {
+            "node": "Append or update row in sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LOG INCERTAIN": {
+      "main": [
+        [
+          {
+            "node": "incertain compteur",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get données existantes2": {
+      "main": [
+        [
+          {
+            "node": "Merge Many to Many3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Fields2": {
+      "main": [
+        [
+          {
+            "node": "Merge Many to Many3",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Many to Many3": {
+      "main": [
+        [
+          {
+            "node": "concatène2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "concatène2": {
+      "main": [
+        [
+          {
+            "node": "Append or update row in sheet6",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get données existantes3": {
+      "main": [
+        [
+          {
+            "node": "Merge Many to Many4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Fields3": {
+      "main": [
+        [
+          {
+            "node": "Merge Many to Many4",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Many to Many4": {
+      "main": [
+        [
+          {
+            "node": "concatène3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "concatène3": {
+      "main": [
+        [
+          {
+            "node": "Append or update row in sheet4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get données existantes4": {
+      "main": [
+        [
+          {
+            "node": "Merge Many to Many5",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Fields4": {
+      "main": [
+        [
+          {
+            "node": "Merge Many to Many5",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Many to Many5": {
+      "main": [
+        [
+          {
+            "node": "concatène4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "concatène4": {
+      "main": [
+        [
+          {
+            "node": "Append or update row in sheet5",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get données existantes5": {
+      "main": [
+        [
+          {
+            "node": "Merge Many to Many6",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Fields5": {
+      "main": [
+        [
+          {
+            "node": "Merge Many to Many6",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Many to Many6": {
+      "main": [
+        [
+          {
+            "node": "concatène5",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "concatène5": {
+      "main": [
+        [
+          {
+            "node": "Append or update row in sheet7",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "incertain compteur": {
+      "main": [
+        [
+          {
+            "node": "Split In Batches - 1 Locataire",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "recap stat": {
+      "main": [
+        [
+          {
+            "node": "Send a message1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "tab2html and nb locataire compteur": {
+      "main": [
+        [
+          {
+            "node": "Send a message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait": {
+      "main": [
+        [
+          {
+            "node": "Switch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "When clicking ‘Execute workflow’": {
+      "main": [
+        [
+          {
+            "node": "Get expected rent",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Get bank transfer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "f4048533-9b65-476e-8e72-30f64a4177b9",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "f12c919d419d64aba4d312743a6db3e259c532a931d33ff57d499f2b0d3d67db"
+  },
+  "id": "9WNUvnZumLP2KyNu",
+  "tags": []
+}
