@@ -12,7 +12,7 @@ While the **full workflow library** is not displayed, here we highlight sanitize
 - **Process**:  
   - Uses **fuzzy matching with scoring** to identify tenants and match payments to expected rents.  
   - Calls a **LLM** to improve ambiguous matches and handle edge cases.  
-- **Output**: A Google Sheet automatically filled with the list of received rents.  
+- **Output**: A Google Sheet automatically filled with the list of received rents and an email to the landlord that sums up the received rents for the current month.  
 - **Extended version** (private): includes an automation that **sends email reminders** to tenants for unpaid rents.
 
 ---
@@ -33,7 +33,7 @@ This workflow coordinates and supervises **multiple specialized AI agents** to h
 
 ## 🔒 About This Repo
 - Workflows here are **simplified and sanitized** (no secrets, no sensitive data).  
-- This repo is for **showcase purposes**, allowing recruiters and collaborators to understand the architecture and logic behind the automations.
+- This repo is for **showcase purposes**.
 
 ---
 
