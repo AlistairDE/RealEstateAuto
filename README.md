@@ -1,39 +1,29 @@
-# 🏢 AI Solutions for Real Estate Agencies (Showcase Workflows)
+# 🏢 AI Solutions for Real Estate Agencies (Showcase Workflow)
 
-This repository shares a **public showcase** of selected n8n workflows used to automate real-estate operations.  
-While the **full workflow library** is not displayed, here we highlight sanitized examples to illustrate our approach.  
+## Notice
+This repository contains a **highly simplified showcase version** of the original workflow.  
+All data, examples, and logic have been **sanitized, minimized**.
 
----
-
-## 📂 Included Workflows
-
-### 1. 🏦 **Rent Payment Reconciliation**
-- **Input**: A bank statement and a table of expected rents.  
-- **Process**:  
-  - Uses **fuzzy matching with scoring** to identify tenants and match payments to expected rents.  
-  - Calls a **LLM** to improve ambiguous matches and handle edge cases.  
-- **Output**: A Google Sheet automatically filled with the list of received rents and an email to the landlord that sums up the received rents for the current month.  
-- **Extended version** (private): includes an automation that **sends email reminders** to tenants for unpaid rents.
+The goal is strictly **demonstration and portfolio presentation**; illustrating the structure, reasoning steps, and high‑level automation logic without reproducing the full production system.
 
 ---
+### 1. 🏦 Rent Payment Reconciliation (Showcase Version)
 
-### 2. 🤖 **Agent Manager Orchestration**
-This workflow coordinates and supervises **multiple specialized AI agents** to handle real-estate tasks.  
-- **Core Logic**:  
-  - A **main manager node** decides which sub-agent to activate based on the request.  
-  - Sub-agents include:
-    - **Lead Generation Agent** (scrapes portals, filters prospects, enriches data).  
-    - **Email Reply Agent** (drafts and personalizes responses using context).  
-    - **Voicebot Agent** (schedules appointments, answers FAQs).  
-    - **Data Logger Agent** (records all activity into a database/CRM).  
-  - Results are consolidated and sent back to the manager for validation.  
-- **Goal**: Provide a **modular, scalable orchestration system** where agents work in parallel but remain centrally supervised.
+**Input:**  
+- A bank statement  
+- A table of expected rents
+  
+**Process:**  
+- Performs fuzzy matching with scoring to identify tenants and match received payments to expected amounts.  
+- Uses an LLM to refine uncertain matches and resolve ambiguous cases.  
+- Applies simple heuristics to flag discrepancies (late, missing, or partial payments).  
 
----
+**Output:**  
+- Automatically populates a Google Sheet with reconciled rent payments for the current month.  
+- Generates a summary email to the landlord listing all received payments.  
 
-## 🔒 About This Repo
-- Workflows here are **simplified and sanitized** (no secrets, no sensitive data).  
-- This repo is for **showcase purposes**.
+**Extended Version (Private):**  
+The full workflow — not included here — also automates tenant reminders by sending emails for unpaid or partially paid rents. This functionality has been removed for privacy and security reasons.
 
 ---
 
