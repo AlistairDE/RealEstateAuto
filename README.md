@@ -20,7 +20,8 @@ The goal is strictly **demonstration and portfolio presentation**; illustrating 
 
 **Output:**  
 - Automatically populates a Google Sheet with reconciled rent payments for the current month.  
-- Generates a summary email to the landlord listing all received payments.  
+- Generates a summary email to the landlord listing all received payments.
+- Automatically sends reminder emails to all tenants who have not paid their rent.
 
 **Extended Version (Private):**  
 The full workflow — not included here — also automates tenant reminders by sending emails for unpaid or partially paid rents. This functionality has been removed for privacy and security reasons.
